@@ -4,9 +4,10 @@ SeeEye — 护眼桌面助手 (PyQt6 主程序)
 运行：python main.py
 
 功能：
-  - 20-20-20 护眼提醒（每 20 分钟系统托盘通知）
-  - 60 分钟强制久坐提醒（全屏遮罩，5 分钟无法跳过）
+  - 20-20-20 护眼提醒（每 20 分钟弹出小窗）
+  - 60 分钟久坐提醒（全屏提醒，可跳过）
   - 活跃用眼时长统计，每 30 分钟同步到云端
+  - 托盘菜单支持开机自启动开关
 """
 
 import os
@@ -19,14 +20,59 @@ from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from eye_break import BreakReminder, EyeRestReminder
 from time_tracker import TimeTracker
 
-# ── 请将此处替换为你的实际域名 ─────────────────────────────────────────────────
-API_BASE = "https://eyesight.your-domain.com"
-# 如暂时不使用云同步，留空即可：API_BASE = ""
+# ── 请将此处替换为你的实际地址 ──────────────────────────────────────────────────
+API_BASE = ""          # 例如 "http://192.168.1.100:8000"，暂不使用留空
 
-EYE_INTERVAL_SEC   = 20 * 60   # 20 分钟护眼提醒
-WORK_INTERVAL_SEC  = 60 * 60   # 60 分钟久坐提醒
-BREAK_DURATION_SEC = 5  * 60   # 强制休息 5 分钟
+EYE_INTERVAL_SEC   = 20 * 60
+WORK_INTERVAL_SEC  = 60 * 60
+BREAK_DURATION_SEC =  5 * 60
 
+_APP_NAME = "SeeEye"
+_REG_KEY  = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def _exe_path() -> str:
+    """返回当前可执行文件的路径（打包后是 .exe，开发时是 python main.py）。"""
+    if getattr(sys, "frozen", False):
+        return sys.executable
+    return f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+
+
+def _resource(filename: str) -> str:
+    """兼容 PyInstaller 打包后的资源路径。"""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, filename)
+
+
+# ── 开机自启动（写注册表）──────────────────────────────────────────────────────
+
+def _is_autostart() -> bool:
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _REG_KEY)
+        winreg.QueryValueEx(key, _APP_NAME)
+        winreg.CloseKey(key)
+        return True
+    except Exception:
+        return False
+
+
+def _set_autostart(enable: bool):
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, _REG_KEY, 0, winreg.KEY_SET_VALUE
+        )
+        if enable:
+            winreg.SetValueEx(key, _APP_NAME, 0, winreg.REG_SZ, _exe_path())
+        else:
+            winreg.DeleteValue(key, _APP_NAME)
+        winreg.CloseKey(key)
+    except Exception:
+        pass
+
+
+# ── 主应用 ─────────────────────────────────────────────────────────────────────
 
 class SeeEyeApp:
     def __init__(self):
@@ -48,8 +94,7 @@ class SeeEyeApp:
     # ── 系统托盘 ───────────────────────────────────────────────────────────────
 
     def _setup_tray(self):
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Eye.svg")
-        self._tray = QSystemTrayIcon(QIcon(icon_path))
+        self._tray = QSystemTrayIcon(QIcon(_resource("Eye.svg")))
         self._tray.setToolTip("SeeEye 护眼助手")
 
         menu = QMenu()
@@ -62,12 +107,15 @@ class SeeEyeApp:
         self._pause_action.setCheckable(True)
         self._pause_action.toggled.connect(lambda c: setattr(self, "_paused", c))
 
-        menu.addAction("立即护眼提醒（20 秒）").triggered.connect(
-            self._show_eye_notice
-        )
-        menu.addAction("立即久坐提醒（5 分钟）").triggered.connect(
-            self._trigger_forced_break
-        )
+        menu.addAction("立即护眼提醒（20 秒）").triggered.connect(self._show_eye_notice)
+        menu.addAction("立即久坐提醒（5 分钟）").triggered.connect(self._trigger_forced_break)
+        menu.addSeparator()
+
+        self._autostart_action = menu.addAction("开机自启动")
+        self._autostart_action.setCheckable(True)
+        self._autostart_action.setChecked(_is_autostart())
+        self._autostart_action.toggled.connect(_set_autostart)
+
         menu.addSeparator()
         menu.addAction("退出").triggered.connect(self._quit)
 
@@ -81,13 +129,14 @@ class SeeEyeApp:
         self._tick_timer.timeout.connect(self._on_tick)
         self._tick_timer.start(1000)
 
-        # 每分钟刷新一次托盘显示的统计数字
         self._stats_timer = QTimer()
         self._stats_timer.timeout.connect(self._refresh_stats)
         self._stats_timer.start(60_000)
 
     def _on_tick(self):
         if self._paused or self._break_active:
+            return
+        if not self.tracker.is_active:
             return
         self._eye_elapsed  += 1
         self._work_elapsed += 1
@@ -129,7 +178,7 @@ class SeeEyeApp:
     # ── 退出 ───────────────────────────────────────────────────────────────────
 
     def _quit(self):
-        self.tracker.stop()   # 强制同步数据
+        self.tracker.stop()
         QApplication.quit()
 
     def run(self):

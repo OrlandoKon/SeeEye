@@ -84,6 +84,10 @@ class TimeTracker:
         with self._lock:
             return self._active_sec // 60
 
+    @property
+    def is_active(self) -> bool:
+        return (time.monotonic() - self._last_activity) < IDLE_THRESHOLD
+
     # ── 活动监听 ───────────────────────────────────────────────────────────────
 
     def _on_activity(self, *_):
