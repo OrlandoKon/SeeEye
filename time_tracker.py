@@ -6,6 +6,7 @@ SeeEye — 本地用眼时长追踪 + 云端同步
 
 import json
 import os
+import sys
 import threading
 import time
 import uuid
