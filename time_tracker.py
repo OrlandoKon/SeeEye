@@ -28,9 +28,24 @@ except ImportError:
 
 DEVICE_ID_FILE  = ".device_id"
 LOCAL_DATA_FILE = "local_usage.json"
-IDLE_THRESHOLD  = 180    # 超过 3 分钟无操作则暂停计时
+IDLE_THRESHOLD  = 180    # 超过 3 分钟无操作则暂停计时（非 Windows 回退用）
 SYNC_INTERVAL   = 1800   # 每 30 分钟自动同步一次
 SLEEP_GAP       = 60     # 两次 tick 间隔超过此值，判定为系统休眠/锁屏
+
+
+def _is_screen_locked() -> bool:
+    """Windows：尝试打开输入桌面，失败则说明工作站已锁定。"""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        hdesk = ctypes.windll.user32.OpenInputDesktop(0, False, 0x0100)
+        if hdesk:
+            ctypes.windll.user32.CloseDesktop(hdesk)
+            return False
+        return True
+    except Exception:
+        return False
 
 
 class TimeTracker:
@@ -86,6 +101,8 @@ class TimeTracker:
 
     @property
     def is_active(self) -> bool:
+        if sys.platform == "win32":
+            return not _is_screen_locked()
         return (time.monotonic() - self._last_activity) < IDLE_THRESHOLD
 
     # ── 活动监听 ───────────────────────────────────────────────────────────────
@@ -136,8 +153,13 @@ class TimeTracker:
                     self._violations = []
 
             # 用户活跃时才累计
-            idle = now - self._last_activity
-            if idle < IDLE_THRESHOLD:
+            # Windows：锁屏时暂停；其他平台回退到键鼠空闲检测
+            if sys.platform == "win32":
+                counting = not _is_screen_locked()
+            else:
+                counting = (now - self._last_activity) < IDLE_THRESHOLD
+
+            if counting:
                 with self._lock:
                     self._active_sec += 1
 
