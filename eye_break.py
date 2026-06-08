@@ -45,7 +45,7 @@ class EyeRestReminder(QWidget):
         self._timer = QTimer()
         self._timer.timeout.connect(self._tick)
         self._build_ui()
-        self._position_bottom_right()
+        self._position_center()
 
     def show(self):
         super().show()
@@ -127,9 +127,12 @@ class EyeRestReminder(QWidget):
         row.addWidget(self._count)
         outer.addLayout(row)
 
-    def _position_bottom_right(self):
+    def _position_center(self):
         screen = QApplication.primaryScreen().availableGeometry()
-        self.move(screen.right() - self.W - 20, screen.bottom() - self.H - 20)
+        self.move(
+            screen.center().x() - self.W // 2,
+            screen.center().y() - self.H // 2,
+        )
 
     def _tick(self):
         self.remaining -= 1
@@ -141,6 +144,7 @@ class EyeRestReminder(QWidget):
     def _close(self):
         self._timer.stop()
         self.hide()
+        self.deleteLater()  # 释放 Qt 对象，避免长时间运行内存堆积
 
 
 # ── 全屏久坐提醒 ───────────────────────────────────────────────────────────────
