@@ -18,7 +18,7 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from eye_break import BreakReminder, EyeRestReminder
-from time_tracker import TimeTracker
+from time_tracker import TimeTracker, _win_is_locked
 
 # ── 请将此处替换为你的实际地址 ──────────────────────────────────────────────────
 API_BASE = ""          # 例如 "http://192.168.1.100:8000"，暂不使用留空
@@ -133,6 +133,15 @@ class SeeEyeApp:
         self._stats_timer.timeout.connect(self._refresh_stats)
         self._stats_timer.start(60_000)
 
+        # 锁屏检测在主线程运行，避免 OpenInputDesktop 与 Qt 消息泵死锁
+        if sys.platform == "win32":
+            self._lock_timer = QTimer()
+            self._lock_timer.timeout.connect(self._check_lock_state)
+            self._lock_timer.start(5_000)
+
+    def _check_lock_state(self):
+        self.tracker.set_locked(_win_is_locked())
+
     def _on_tick(self):
         if self._paused or self._break_active:
             return
@@ -152,6 +161,13 @@ class SeeEyeApp:
     # ── 提醒逻辑 ───────────────────────────────────────────────────────────────
 
     def _show_eye_notice(self):
+        # 关闭上一个还未消失的护眼小窗，避免 Qt 对象堆积
+        existing = getattr(self, "_eye_win", None)
+        if existing is not None:
+            try:
+                existing._close()
+            except RuntimeError:
+                pass  # C++ 对象已被 Qt 回收，忽略
         self._eye_win = EyeRestReminder()
         self._eye_win.show()
 
@@ -178,6 +194,8 @@ class SeeEyeApp:
     # ── 退出 ───────────────────────────────────────────────────────────────────
 
     def _quit(self):
+        if hasattr(self, "_lock_timer"):
+            self._lock_timer.stop()
         self.tracker.stop()
         QApplication.quit()
 

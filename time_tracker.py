@@ -35,7 +35,6 @@ LOCAL_DATA_FILE = "local_usage.json"
 IDLE_THRESHOLD  = 180    # 空闲超过 3 分钟则暂停（非 Windows 用）
 SYNC_INTERVAL   = 1800   # 每 30 分钟同步一次
 SLEEP_GAP       = 60     # tick 间隔超过此值判定为休眠
-LOCK_CHECK_FREQ = 5      # 每隔多少秒检测一次锁屏
 
 
 # ── Windows 原生检测工具 ────────────────────────────────────────────────────────
@@ -56,17 +55,20 @@ def _win_idle_seconds() -> float:
 
 
 def _win_is_locked() -> bool:
-    """通过输入桌面名称判断屏幕是否已锁定。"""
+    """通过输入桌面名称判断屏幕是否已锁定。
+    必须在主线程（Qt UI 线程）调用，避免与 Windows 消息泵死锁。"""
     try:
         import ctypes
         user32 = ctypes.windll.user32
-        hdesk = user32.OpenInputDesktop(0, False, 0x0100)
+        hdesk = user32.OpenInputDesktop(0, False, 0x0001)  # DESKTOP_READOBJECTS
         if not hdesk:
             return True
-        buf = ctypes.create_unicode_buffer(256)
-        user32.GetUserObjectInformationW(hdesk, 2, buf, ctypes.sizeof(buf), None)
-        user32.CloseDesktop(hdesk)
-        return buf.value != "Default"
+        try:
+            buf = ctypes.create_unicode_buffer(256)
+            user32.GetUserObjectInformationW(hdesk, 2, buf, ctypes.sizeof(buf), None)
+            return buf.value != "Default"
+        finally:
+            user32.CloseDesktop(hdesk)
     except Exception:
         return False
 
@@ -118,6 +120,10 @@ class TimeTracker:
         with self._lock:
             return self._active_sec // 60
 
+    def set_locked(self, locked: bool):
+        """由主线程的 QTimer 调用，更新锁屏状态，避免后台线程调用 OpenInputDesktop 死锁。"""
+        self._locked = locked
+
     @property
     def is_active(self) -> bool:
         """供主线程读取，不做任何 IO 或系统调用。"""
@@ -152,8 +158,7 @@ class TimeTracker:
     # ── 计时主循环（后台线程）──────────────────────────────────────────────────────
 
     def _tick_loop(self):
-        last_sync       = time.monotonic()
-        lock_check_acc  = 0   # 锁屏检测累计秒数
+        last_sync = time.monotonic()
 
         while not self._stop.wait(1.0):
             now   = time.monotonic()
@@ -174,12 +179,9 @@ class TimeTracker:
                     self._active_sec = 0
                     self._violations = []
 
-            # 锁屏检测（每 LOCK_CHECK_FREQ 秒检测一次，降低 API 调用频率）
+            # 锁屏状态由主线程 QTimer 通过 set_locked() 更新，此处只读
+            # _win_idle_seconds() 仅用 GetLastInputInfo，可安全在后台调用
             if sys.platform == "win32":
-                lock_check_acc += 1
-                if lock_check_acc >= LOCK_CHECK_FREQ:
-                    lock_check_acc  = 0
-                    self._locked    = _win_is_locked()
                 idle_sec = _win_idle_seconds()
                 counting = not self._locked and idle_sec < IDLE_THRESHOLD
             else:
